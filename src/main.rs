@@ -14,27 +14,22 @@ use ffmpeg_next::{
 };
 
 
-fn show_frame(pixels: &[u8], real_width: usize)
+fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_height: usize)
 {
-    let real_height = pixels.len() / real_width;
-
-    let negative_pad_x = real_width % 2;
-    let negative_pad_y = (real_height % 4).min(1);
-
-    let width = real_width / 2 - negative_pad_x;
-    let height = real_height / 4 - negative_pad_y;
-
     print!("\x1b[0;0H");
-    for y in 0..height
+    for y in 0..scaled_height
     {
-        for x in 0..width
+        for x in 0..scaled_width
         {
             let pixel = |index: usize|
             {
                 let index_x = index % 2;
                 let index_y = index / 2;
 
-                pixels[(y * 4 + index_y) * real_width + (x * 2 + index_x)]
+                let x = x * 2 + index_x;
+                let y = y * 4 + index_y;
+
+                pixels[y * skip_width + x]
             };
 
             let chunk = (0..8).map(|index|
@@ -80,6 +75,23 @@ fn get_braille(pixels: [bool; 8]) -> char
     char::from_u32(0x2800 + index).unwrap()
 }
 
+pub fn terminal_size() -> (usize, usize)
+{
+    let winsize = libc::winsize{
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0
+    };
+
+    unsafe
+    {
+        libc::ioctl(0, libc::TIOCGWINSZ, &winsize);
+    }
+
+    (winsize.ws_col as usize, winsize.ws_row as usize)
+}
+
 fn main()
 {
     let video_path = env::args().nth(1).unwrap_or_else(||
@@ -97,10 +109,18 @@ fn main()
     let context_decoder = codec::context::Context::from_parameters(input.parameters()).unwrap();
     let mut decoder = context_decoder.decoder().video().unwrap();
 
-    let size = terminal_size::terminal_size().unwrap();
+    let size = terminal_size();
+    let unscaled_width = size.0 as usize;
+    let unscaled_height = size.1 as usize - 1;
 
-    let width = size.0.0 as usize * 2;
-    let height = (size.1.0 as usize * 4) - 1;
+    let width = unscaled_width * 2;
+    let height = unscaled_height * 4;
+
+    let width_remainder = width % 32;
+    let width_adjust = 32 - width_remainder;
+    let width_adjust = if width_adjust == 32 {0} else {width_adjust};
+
+    let width_skip = width + width_adjust;
 
     let mut scaling_context = scaling::context::Context::get(
         decoder.format(),
@@ -125,7 +145,7 @@ fn main()
                 let mut frame = Video::empty();
                 scaling_context.run(&decoded, &mut frame).unwrap();
 
-                show_frame(frame.data(0), width);
+                show_frame(frame.data(0), width_skip, unscaled_width, unscaled_height);
 
                 //i dont get the time base stuff ; -; its not the inverse of the actual fps..
                 let duration = f64::from(stream.rate().invert()) * 1000.0;
