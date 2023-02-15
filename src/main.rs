@@ -16,12 +16,14 @@ use ffmpeg_next::{
 
 fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_height: usize)
 {
+    let mut error = 0;
+
     print!("\x1b[0;0H");
     for y in 0..scaled_height
     {
         for x in 0..scaled_width
         {
-            let pixel = |index: usize|
+            let pixel_index = |index: usize|
             {
                 let index_x = index % 2;
                 let index_y = index / 2;
@@ -29,12 +31,24 @@ fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_heig
                 let x = x * 2 + index_x;
                 let y = y * 4 + index_y;
 
-                pixels[y * skip_width + x]
+                y * skip_width + x
             };
 
             let chunk = (0..8).map(|index|
             {
-                pixel(index) < 127
+                let pixel = pixels[pixel_index(index)].saturating_add(error);
+
+                let filled = pixel < 127;
+
+                error = if filled
+                {
+                    pixel
+                } else
+                {
+                    pixel - 127
+                };
+
+                filled
             }).collect::<Vec<bool>>().try_into().unwrap();
 
             print!("{}", get_braille(chunk));
