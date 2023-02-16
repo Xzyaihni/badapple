@@ -1,9 +1,10 @@
 use std::{
-    env,
     thread,
-    process,
+    path::Path,
     time::{Duration, Instant}
 };
+
+use argparse::{ArgumentParser, StoreFalse, Store};
 
 use ffmpeg_next::{
     codec,
@@ -20,7 +21,13 @@ struct Pos
     y: i32
 }
 
-fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_height: usize)
+fn show_frame(
+    pixels: &[u8],
+    options: &Options,
+    skip_width: usize,
+    scaled_width: usize,
+    scaled_height: usize
+)
 {
     let width = scaled_width * 2;
     let height = scaled_height * 4;
@@ -46,9 +53,9 @@ fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_heig
                 let pixel = pixel.round() as u8;
                 errors[error_index] = 0.0;
 
-                let filled = pixel < 127;
+                let filled = pixel < options.threshold;
 
-                let amounts = [
+                const PATTERN: [(f64, Pos); 4] = [
                     (7.0, Pos{x: 1, y: 0}),
                     (3.0, Pos{x: -1, y: 1}),
                     (5.0, Pos{x: 0, y: 1}),
@@ -57,30 +64,33 @@ fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_heig
 
                 let denominator = 16.0;
 
-                let error = if filled
+                if options.dither
                 {
-                    pixel
-                } else
-                {
-                    pixel - 127
-                };
-
-                for (amount, pos) in amounts
-                {
-                    let width = width as i32;
-                    let height = height as i32;
-
-                    let x = x as i32 + pos.x;
-                    let y = y as i32 + pos.y;
-                    if x >= width || x < 0 || y >= height || y < 0
+                    let error = if filled
                     {
-                        continue;
+                        pixel
+                    } else
+                    {
+                        pixel - options.threshold
+                    };
+
+                    for (amount, pos) in PATTERN
+                    {
+                        let width = width as i32;
+                        let height = height as i32;
+
+                        let x = x as i32 + pos.x;
+                        let y = y as i32 + pos.y;
+                        if x >= width || x < 0 || y >= height || y < 0
+                        {
+                            continue;
+                        }
+
+                        let scale = amount / denominator;
+
+                        let index = error_index as i32 + pos.y * width + pos.x;
+                        errors[index as usize] += error as f64 * scale;
                     }
-
-                    let scale = amount / denominator;
-
-                    let index = error_index as i32 + pos.y * width + pos.x;
-                    errors[index as usize] += error as f64 * scale;
                 }
 
                 filled
@@ -141,15 +151,46 @@ pub fn terminal_size() -> (usize, usize)
     (winsize.ws_col as usize, winsize.ws_row as usize)
 }
 
+struct Options
+{
+    pub dither: bool,
+    pub threshold: u8
+}
+
 fn main()
 {
-    let video_path = env::args().nth(1).unwrap_or_else(||
-    {
-        eprintln!("usage: {} path/to/badapple.mp4", env::args().next().unwrap());
-        process::exit(1)
-    });
-
     ffmpeg_next::init().unwrap();
+
+    let mut options = Options{dither: true, threshold: 127};
+
+    let mut video_path = String::new();
+
+    {
+        let mut parser = ArgumentParser::new();
+
+        parser.refer(&mut options.dither)
+            .add_option(&["-d", "--dither"], StoreFalse, "disable dithering");
+
+        parser.refer(&mut options.threshold)
+            .add_option(&["-t", "--threshold"], Store,
+                "threshold value from 0 to 255 (default 127)");
+
+        parser.refer(&mut video_path)
+            .add_option(&["-i", "--input"], Store, "path to the video file")
+            .add_argument("video_path", Store, "path to the video file")
+            .required();
+
+        parser.parse_args_or_exit();
+    }
+
+    if !Path::new(&video_path).exists()
+    {
+        eprintln!("no file at path: \"{video_path}\"");
+        return;
+    }
+
+    let options = options;
+
     let mut input_context = format::input(&video_path).unwrap();
     let input = input_context.streams().best(Type::Video).unwrap();
 
@@ -194,7 +235,7 @@ fn main()
                 let mut frame = Video::empty();
                 scaling_context.run(&decoded, &mut frame).unwrap();
 
-                show_frame(frame.data(0), width_skip, unscaled_width, unscaled_height);
+                show_frame(frame.data(0), &options, width_skip, unscaled_width, unscaled_height);
 
                 //i dont get the time base stuff ; -; its not the inverse of the actual fps..
                 let duration = f64::from(stream.rate().invert()) * 1000.0;
