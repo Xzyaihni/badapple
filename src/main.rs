@@ -14,16 +14,25 @@ use ffmpeg_next::{
 };
 
 
+struct Pos
+{
+    x: i32,
+    y: i32
+}
+
 fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_height: usize)
 {
-    let mut error = 0;
+    let width = scaled_width * 2;
+    let height = scaled_height * 4;
+
+    let mut errors = vec![0.0; width * height];
 
     print!("\x1b[0;0H");
     for y in 0..scaled_height
     {
         for x in 0..scaled_width
         {
-            let pixel_index = |index: usize|
+            let chunk = (0..8).map(|index|
             {
                 let index_x = index % 2;
                 let index_y = index / 2;
@@ -31,22 +40,48 @@ fn show_frame(pixels: &[u8], skip_width: usize, scaled_width: usize, scaled_heig
                 let x = x * 2 + index_x;
                 let y = y * 4 + index_y;
 
-                y * skip_width + x
-            };
+                let error_index = y * width + x;
 
-            let chunk = (0..8).map(|index|
-            {
-                let pixel = pixels[pixel_index(index)].saturating_add(error);
+                let pixel = pixels[y * skip_width + x] as f64 + errors[error_index];
+                let pixel = pixel.round() as u8;
+                errors[error_index] = 0.0;
 
                 let filled = pixel < 127;
 
-                error = if filled
+                let amounts = [
+                    (7.0, Pos{x: 1, y: 0}),
+                    (3.0, Pos{x: -1, y: 1}),
+                    (5.0, Pos{x: 0, y: 1}),
+                    (1.0, Pos{x: 1, y: 1})
+                ];
+
+                let denominator = 16.0;
+
+                let error = if filled
                 {
                     pixel
                 } else
                 {
                     pixel - 127
                 };
+
+                for (amount, pos) in amounts
+                {
+                    let width = width as i32;
+                    let height = height as i32;
+
+                    let x = x as i32 + pos.x;
+                    let y = y as i32 + pos.y;
+                    if x >= width || x < 0 || y >= height || y < 0
+                    {
+                        continue;
+                    }
+
+                    let scale = amount / denominator;
+
+                    let index = error_index as i32 + pos.y * width + pos.x;
+                    errors[index as usize] += error as f64 * scale;
+                }
 
                 filled
             }).collect::<Vec<bool>>().try_into().unwrap();
